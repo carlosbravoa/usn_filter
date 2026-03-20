@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "usn-filter"
+version = "1.0.0"
+description = "Filter grype vulnerability scan results against Ubuntu Security Notices (USN) to remove false positives."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+# No third-party runtime dependencies – stdlib only (urllib, tarfile, lzma, json …)
+dependencies = []
+
+keywords = ["security", "vulnerability", "grype", "ubuntu", "usn", "vex", "cve"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration",
+]
+
+[project.scripts]
+usn-filter = "usn_filter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
