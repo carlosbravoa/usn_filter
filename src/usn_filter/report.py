@@ -4,7 +4,6 @@ report.py
 Console report formatter with ANSI colours.
 """
 
-import sys
 from typing import IO
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Negligible", "Unknown"]
@@ -51,13 +50,13 @@ def _fmt_row(row: dict, c: dict) -> str:
     sev        = row.get("severity", "Unknown")
     colour_key = SEVERITY_COLOUR_KEY.get(sev, "white")
     sev_str    = f"{c[colour_key]}{sev:<12}{c['reset']}"
-    fix_info   = f"→ {', '.join(row['fix_versions'])}" if row.get("fix_versions") else ""
+    pkg_type   = (row.get("pkg_type", "") or "unknown").strip()
     return (
         f"  {c['bold']}{row['pkg_name']:<30}{c['reset']}"
         f"  {row['pkg_version']:<30}"
         f"  {c['cyan']}{row['cve_id']:<20}{c['reset']}"
         f"  {sev_str}"
-        f"  {c['grey']}{fix_info}{c['reset']}"
+        f"  {c['magenta']}{pkg_type:<14}{c['reset']}"
     )
 
 
@@ -70,7 +69,7 @@ def print_report(
 ) -> None:
     divider = c["grey"] + "─" * 110 + c["reset"]
     header  = (
-        f"  {'PACKAGE':<30}  {'INSTALLED VERSION':<30}  {'CVE':<20}  {'SEVERITY':<12}  FIX"
+        f"  {'PACKAGE':<30}  {'INSTALLED VERSION':<30}  {'CVE':<20}  {'SEVERITY':<12}  {'TYPE':<14}"
     )
 
     # ── Active vulnerabilities ────────────────────────────────────────────────
@@ -86,7 +85,7 @@ def print_report(
         for row in sorted(active, key=_sev_sort_key):
             print(_fmt_row(row, c), file=out)
 
-    # ── Fixed / patched by USN ────────────────────────────────────────────────
+    # ── Fixed / patched by ESM ────────────────────────────────────────────────
     if show_fixed:
         print(f"\n{c['bold']}{c['green']}{'═'*110}{c['reset']}", file=out)
         print(
@@ -114,7 +113,7 @@ def print_report(
     print(f"\n{c['bold']}{'═'*110}{c['reset']}", file=out)
     print(f"{c['bold']}  SUMMARY{c['reset']}", file=out)
     print(f"{c['bold']}{'═'*110}{c['reset']}", file=out)
-    print(f"\n  Total findings (before USN filter) : {c['bold']}{total_original}{c['reset']}", file=out)
+    print(f"\n  Total findings (before ESM filter) : {c['bold']}{total_original}{c['reset']}", file=out)
     print(f"  Removed as ESM-patched             : {c['green']}{c['bold']}{len(fixed)}{c['reset']}", file=out)
     print(f"  Remaining active vulnerabilities   : {c['red']}{c['bold']}{len(active)}{c['reset']}", file=out)
 
@@ -132,4 +131,5 @@ def print_report(
             f"  {c['green']}{f_count:>12}{c['reset']}",
             file=out,
         )
+
     print(file=out)
