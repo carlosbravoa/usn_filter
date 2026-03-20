@@ -15,12 +15,6 @@ separately with `--show-fixed`).
 ## Installation
 
 ```bash
-pip install usn-filter
-```
-
-Or directly from source:
-
-```bash
 git clone https://github.com/your-org/usn-filter
 cd usn-filter
 pip install .
