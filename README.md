@@ -94,10 +94,10 @@ Delete either path (or run `--refresh-vex`) to force a fresh download.
 ══════════════════════════════════════════════════════════════
 
   Total findings (before USN filter) : 47
-  Removed as USN-patched             : 35
+  Removed as ESM-patched             : 35
   Remaining active vulnerabilities   : 12
 
-  Severity        Active   USN-Patched
+  Severity        Active   ESM-Patched
   -----------   --------  ------------
   Critical             1             3
   High                 5            18
