@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "usn-filter"
-version = "1.0.0"
+version = "1.0.1"
 description = "Filter grype vulnerability scan results against Ubuntu Security Notices (USN) to remove false positives."
 readme = "README.md"
 license = { text = "MIT" }
