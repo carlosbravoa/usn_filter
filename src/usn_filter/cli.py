@@ -31,7 +31,7 @@ Examples
   grype my-container -o json > output.json
   usn-filter --grype output.json
 
-  # Show USN-patched entries in a separate section:
+  # Show ESM-patched entries in a separate section:
   usn-filter --grype output.json --show-fixed
 
   # Force re-download of VEX data:
@@ -70,7 +70,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--show-fixed", action="store_true",
-        help="Print USN-patched entries in a dedicated section instead of hiding them.",
+        help="Print ESM-patched entries in a dedicated section instead of hiding them.",
     )
     parser.add_argument(
         "--out", metavar="FILE", default=None,
@@ -102,8 +102,8 @@ def main() -> None:
 
     # ── Build USN lookup ──────────────────────────────────────────────────────
     print(f"[*] Loading USN data from  : {usn_dir}", file=sys.stderr)
-    lookup, _ = build_usn_db(usn_dir)
-    print(f"[*] USN packages indexed   : {len(lookup)}", file=sys.stderr)
+    db = build_usn_db(usn_dir)
+    print(f"[*] USN packages indexed   : {len(db)}", file=sys.stderr)
 
     # ── Parse grype report ────────────────────────────────────────────────────
     print(f"[*] Parsing grype report   : {grype_path}", file=sys.stderr)
@@ -111,7 +111,7 @@ def main() -> None:
     print(f"[*] Grype findings parsed  : {len(rows)}", file=sys.stderr)
 
     # ── Classify ──────────────────────────────────────────────────────────────
-    active, fixed = classify_rows(rows, lookup)
+    active, fixed = classify_rows(rows, db)
     print(
         f"[*] Active / ESM-patched   : {len(active)} / {len(fixed)}",
         file=sys.stderr,
