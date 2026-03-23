@@ -2,6 +2,28 @@
 core.py
 ────────────────────────────────────────────────────────────────────────────────
 USN lookup-table builder, grype output parser, and classifier.
+
+Lookup structure (new)
+──────────────────────
+  db[(cve_id, pkg_name)] = [
+      {"version": "1.2.3-1ubuntu1+esm2", "arch": "amd64", "distro": "jammy"},
+      ...
+  ]
+
+A grype finding (cve_id, pkg_name, pkg_version) is considered ESM-patched when:
+  1. The (cve_id, pkg_name) pair exists in the DB, AND
+  2. At least one DB entry has a fix_version V such that pkg_version >= V
+     under Debian/ESM-aware version ordering.
+
+ESM version ordering
+────────────────────
+For versions that share the same base (everything before +esmN / ~esmN):
+  base+esm3  >  base+esm2  >  base+esm1  >  base
+So if the USN recorded the fix at base+esm1 and the machine has base+esm3,
+the CVE is already fixed.
+
+For versions without an ESM suffix we fall back to a best-effort Debian epoch
++ numeric segment comparison.
 """
 
 import json
@@ -10,23 +32,90 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-# ── PURL regex ───────────────────────────────────────────────────────────────
+# ── regexes ──────────────────────────────────────────────────────────────────
 _PURL_RE = re.compile(
     r"pkg:deb/ubuntu/(?P<n>[^@?]+)@(?P<version>[^?]+)\?(?P<qualifiers>.*)"
 )
-
-# grype table header pattern
 _TABLE_HEADER_RE = re.compile(
     r"^\s*NAME\s+INSTALLED\s+FIXED-IN\s+TYPE\s+VULNERABILITY\s+SEVERITY\s*$",
     re.IGNORECASE,
 )
+# matches  +esm3  or  ~esm3  at the end of a version string
+_ESM_RE = re.compile(r"[+~]esm(\d+)$", re.IGNORECASE)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VERSION COMPARISON
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _parse_esm(version: str) -> tuple[str, int | None]:
+    """
+    Split a version string into (base, esm_number).
+
+    '1.2.3-1ubuntu1+esm2'  →  ('1.2.3-1ubuntu1', 2)
+    '1.2.3-1ubuntu1'       →  ('1.2.3-1ubuntu1', None)
+    """
+    m = _ESM_RE.search(version)
+    if m:
+        return version[: m.start()], int(m.group(1))
+    return version, None
+
+
+def _debian_version_key(version: str) -> tuple:
+    """
+    Return a sortable key for a Debian-style version string.
+    Handles:  epoch:upstream-debian
+    Splits numeric and non-numeric parts so '10' > '9'.
+    """
+    # strip epoch
+    if ":" in version:
+        _epoch_str, version = version.split(":", 1)
+        epoch = int(_epoch_str) if _epoch_str.isdigit() else 0
+    else:
+        epoch = 0
+
+    def _tokenise(s: str) -> list:
+        """Break a string into alternating (str, int) tokens for comparison."""
+        tokens = []
+        for part in re.split(r"(\d+)", s):
+            if part.isdigit():
+                tokens.append((1, int(part)))
+            else:
+                tokens.append((0, part))
+        return tokens
+
+    return (epoch,) + tuple(_tokenise(version))
+
+
+def version_is_gte(installed: str, fix_version: str) -> bool:
+    """
+    Return True when *installed* >= *fix_version* under ESM-aware Debian ordering.
+
+    Rule 1 – same base, ESM suffix only:
+        installed base == fix base  →  compare esm numbers (None treated as 0).
+        esm3 >= esm2 >= esm1 >= (no esm)
+
+    Rule 2 – different bases (upstream or debian revision changed):
+        fall back to _debian_version_key comparison.
+    """
+    inst_base, inst_esm = _parse_esm(installed)
+    fix_base,  fix_esm  = _parse_esm(fix_version)
+
+    if inst_base == fix_base:
+        # Same base: compare only the ESM counter
+        inst_n = inst_esm if inst_esm is not None else 0
+        fix_n  = fix_esm  if fix_esm  is not None else 0
+        return inst_n >= fix_n
+
+    # Different bases: use generic Debian version ordering
+    return _debian_version_key(installed) >= _debian_version_key(fix_version)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # USN DB
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _parse_purl(purl_string: str):
+def _parse_purl(purl_string: str) -> dict | None:
     match = _PURL_RE.match(purl_string)
     if not match:
         return None
@@ -44,19 +133,23 @@ def _parse_purl(purl_string: str):
     }
 
 
-def build_usn_db(usn_dir: Path):
+def build_usn_db(usn_dir: Path) -> dict:
     """
-    Returns
-    -------
-    lookup : defaultdict
-        lookup[pkg_name][pkg_version] = {"archs": set(), "distros": set()}
-    raw_db : dict
-        Flat dict keyed by product @id → USN metadata.
+    Build and return the CVE+package → fix-versions index.
+
+    Structure
+    ---------
+    db[(cve_id, pkg_name)] = [
+        {"version": str, "arch": str|None, "distro": str|None},
+        ...
+    ]
+
+    Each entry records one version at which the (cve, package) pair was fixed
+    according to the USN VEX data.  A single CVE may appear in multiple USN
+    statements (e.g. different distro releases), so the list can have several
+    entries with different versions.
     """
-    lookup: dict = defaultdict(
-        lambda: defaultdict(lambda: {"archs": set(), "distros": set()})
-    )
-    raw_db: dict = {}
+    db: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
     files = list(usn_dir.glob("*.json"))
     if not files:
@@ -71,40 +164,70 @@ def build_usn_db(usn_dir: Path):
             continue
 
         for statement in usn_doc.get("statements", []):
-            vuln      = statement.get("vulnerability", {})
-            usn_id    = vuln.get("name", "")
-            cves      = ", ".join(vuln.get("aliases", []))
-            timestamp = statement.get("timestamp", "")
-            status    = statement.get("status", "")
+            vuln   = statement.get("vulnerability", {})
+            status = statement.get("status", "")
+
+            # Collect every CVE this statement covers (USN id + aliases)
+            cve_ids: set[str] = set()
+            usn_name = vuln.get("name", "")
+            if usn_name:
+                cve_ids.add(usn_name)
+            for alias in vuln.get("aliases", []):
+                if alias:
+                    cve_ids.add(alias)
+
+            if not cve_ids:
+                continue
 
             for product in statement.get("products", []):
-                pid = product.get("@id", "")
-                raw_db[pid] = {
-                    "usn":    usn_id,
-                    "cves":   cves,
-                    "date":   timestamp,
-                    "status": status,
-                }
-                purl = _parse_purl(pid)
+                purl = _parse_purl(product.get("@id", ""))
                 if not purl:
                     continue
-                name    = purl["name"]
-                version = purl["version"]
-                arch    = purl["arch"]
-                distro  = purl["distro"]
-                if arch:
-                    lookup[name][version]["archs"].add(arch)
-                if distro:
-                    lookup[name][version]["distros"].add(distro)
 
-    return lookup, raw_db
+                entry = {
+                    "version": purl["version"],
+                    "arch":    purl["arch"],
+                    "distro":  purl["distro"],
+                    "status":  status,
+                }
+                for cve_id in cve_ids:
+                    db[(cve_id, purl["name"])].append(entry)
+
+    return db
 
 
-def is_fixed(lookup, pkg_name: str, pkg_version: str, arch: str | None = None) -> bool:
-    if pkg_name in lookup and pkg_version in lookup[pkg_name]:
-        if arch:
-            return arch in lookup[pkg_name][pkg_version]["archs"]
-        return True
+def is_fixed(
+    db: dict,
+    cve_id: str,
+    pkg_name: str,
+    pkg_version: str,
+    arch: str | None = None,
+) -> bool:
+    """
+    Return True when the USN DB confirms that *pkg_version* of *pkg_name*
+    is already patched for *cve_id*.
+
+    Match criteria (all must hold):
+    1. (cve_id, pkg_name) exists in the DB.
+    2. At least one recorded fix_version V satisfies: pkg_version >= V
+       under ESM-aware Debian version ordering.
+    3. If *arch* is supplied, the DB entry's arch must match (or be unset).
+    """
+    key = (cve_id, pkg_name)
+    entries = db.get(key)
+    if not entries:
+        return False
+
+    for entry in entries:
+        fix_ver = entry["version"]
+
+        # arch guard: skip entries for a different arch
+        if arch and entry.get("arch") and entry["arch"] != arch:
+            continue
+
+        if version_is_gte(pkg_version, fix_ver):
+            return True
+
     return False
 
 
@@ -222,17 +345,17 @@ def parse_grype_file(path: Path) -> list[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def classify_rows(
-    rows: list[dict], lookup
+    rows: list[dict], db: dict
 ) -> tuple[list[dict], list[dict]]:
     """
-    Returns ``(active_vulns, fixed_by_usn)``.
+    Returns ``(active_vulns, esm_patched)``.
 
-    A row is considered a false-positive / patched when the USN data shows the
-    package+version combination is already fixed.
+    A row is ESM-patched when the USN DB confirms (cve_id, pkg_name, pkg_version)
+    is already fixed, using CVE-scoped and ESM-version-aware matching.
     """
     active, fixed = [], []
     for row in rows:
-        if is_fixed(lookup, row["pkg_name"], row["pkg_version"], row.get("arch")):
+        if is_fixed(db, row["cve_id"], row["pkg_name"], row["pkg_version"], row.get("arch")):
             fixed.append(row)
         else:
             active.append(row)
